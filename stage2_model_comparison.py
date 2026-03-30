@@ -1,14 +1,11 @@
-"""Stage 3: nested cross-validation model comparison."""
-
 import argparse
 from pathlib import Path
-
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from scipy.stats import uniform
 from sklearn.ensemble import RandomForestClassifier, VotingClassifier
-from sklearn.experimental import enable_iterative_imputer  # noqa: F401
+from sklearn.experimental import enable_iterative_imputer
 from sklearn.impute import IterativeImputer
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import auc, roc_curve
@@ -28,12 +25,10 @@ FINAL_FEATURES = [
     "Stenosis_Pct", "tmax6", "rcbf34",
 ]
 
-
 def read_table(path: Path) -> pd.DataFrame:
     if path.suffix.lower() in {".xlsx", ".xls"}:
         return pd.read_excel(path)
     return pd.read_csv(path)
-
 
 def get_model_spaces(class_ratio: float) -> dict[str, tuple[Pipeline, dict]]:
     pipe_lr = Pipeline([
@@ -62,14 +57,7 @@ def get_model_spaces(class_ratio: float) -> dict[str, tuple[Pipeline, dict]]:
 
     pipe_xgb = Pipeline([
         ("imputer", IterativeImputer(max_iter=10, random_state=IMPUTER_SEED)),
-        (
-            "clf",
-            XGBClassifier(
-                scale_pos_weight=class_ratio,
-                eval_metric="logloss",
-                random_state=SEARCH_SEED,
-            ),
-        ),
+        ("clf", XGBClassifier(scale_pos_weight=class_ratio, eval_metric="logloss", random_state=SEARCH_SEED)),
     ])
     param_xgb = {
         "clf__n_estimators": [50, 100, 150, 200],
@@ -84,7 +72,6 @@ def get_model_spaces(class_ratio: float) -> dict[str, tuple[Pipeline, dict]]:
         "XGBoost": (pipe_xgb, param_xgb),
     }
 
-
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--data", required=True, type=Path)
@@ -97,13 +84,7 @@ def main() -> None:
     plt.style.use("seaborn-v0_8-whitegrid")
 
     df = read_table(args.data)
-    df.columns = [str(column).strip() for column in df.columns]
-
-    missing_features = [feature for feature in FINAL_FEATURES if feature not in df.columns]
-    if missing_features:
-        raise ValueError(f"Missing required feature columns: {missing_features}")
-    if args.target not in df.columns:
-        raise ValueError(f"Target column '{args.target}' was not found in the input file.")
+    df.columns = [str(c).strip() for c in df.columns]
 
     X = df[FINAL_FEATURES].copy()
     y = df[args.target].values.ravel()
@@ -113,11 +94,8 @@ def main() -> None:
 
     mean_fpr = np.linspace(0, 1, 100)
     colors = {
-        "Voting Ensemble (LR + SVM)": "#E63946",
-        "SVM": "#2A9D8F",
-        "Logistic Regression": "#457B9D",
-        "Random Forest": "#F4A261",
-        "XGBoost": "#9467BD",
+        "Voting Ensemble (LR + SVM)": "#E63946", "SVM": "#2A9D8F",
+        "Logistic Regression": "#457B9D", "Random Forest": "#F4A261", "XGBoost": "#9467BD",
     }
     roc_storage = {name: {"tprs": [], "aucs": []} for name in colors}
 
@@ -126,28 +104,21 @@ def main() -> None:
         y_train, y_test = y[train_idx], y[test_idx]
 
         positive_count = np.sum(y_train == 1)
-        negative_count = np.sum(y_train == 0)
-        class_ratio = float(negative_count) / positive_count if positive_count > 0 else 1.0
+        class_ratio = float(np.sum(y_train == 0)) / positive_count if positive_count > 0 else 1.0
 
         model_spaces = get_model_spaces(class_ratio)
-        best_models: dict[str, Pipeline] = {}
+        best_models = {}
 
         for model_name, (estimator, param_space) in model_spaces.items():
             search = RandomizedSearchCV(
-                estimator=estimator,
-                param_distributions=param_space,
-                n_iter=30,
-                cv=inner_cv,
-                scoring="roc_auc",
-                n_jobs=-1,
-                random_state=SEARCH_SEED,
+                estimator=estimator, param_distributions=param_space, n_iter=30,
+                cv=inner_cv, scoring="roc_auc", n_jobs=-1, random_state=SEARCH_SEED
             )
             search.fit(X_train, y_train)
             best_models[model_name] = search.best_estimator_
 
         for model_name in ["Logistic Regression", "SVM", "Random Forest", "XGBoost"]:
-            model = best_models[model_name]
-            y_prob = model.predict_proba(X_test)[:, 1]
+            y_prob = best_models[model_name].predict_proba(X_test)[:, 1]
             fpr, tpr, _ = roc_curve(y_test, y_prob)
             interpolated_tpr = np.interp(mean_fpr, fpr, tpr)
             interpolated_tpr[0] = 0.0
@@ -155,11 +126,8 @@ def main() -> None:
             roc_storage[model_name]["aucs"].append(auc(fpr, tpr))
 
         voting_model = VotingClassifier(
-            estimators=[
-                ("SVM", best_models["SVM"]),
-                ("LR", best_models["Logistic Regression"]),
-            ],
-            voting="soft",
+            estimators=[("SVM", best_models["SVM"]), ("LR", best_models["Logistic Regression"])],
+            voting="soft"
         )
         voting_model.fit(X_train, y_train)
         y_prob_voting = voting_model.predict_proba(X_test)[:, 1]
@@ -173,32 +141,23 @@ def main() -> None:
     for model_name, roc_info in roc_storage.items():
         mean_tpr = np.mean(roc_info["tprs"], axis=0)
         mean_tpr[-1] = 1.0
-        mean_auc = np.mean(roc_info["aucs"])
-        std_auc = np.std(roc_info["aucs"])
+        mean_auc, std_auc = np.mean(roc_info["aucs"]), np.std(roc_info["aucs"])
         plt.plot(
-            mean_fpr,
-            mean_tpr,
-            color=colors[model_name],
-            lw=3.5 if "Voting" in model_name else 1.6,
-            alpha=0.85,
-            label=f"{model_name} (AUC = {mean_auc:.3f} ± {std_auc:.3f})",
+            mean_fpr, mean_tpr, color=colors[model_name],
+            lw=3.5 if "Voting" in model_name else 1.6, alpha=0.85,
+            label=f"{model_name} (AUC = {mean_auc:.3f} ± {std_auc:.3f})"
         )
 
     plt.plot([0, 1], [0, 1], linestyle="--", lw=2, color="grey", alpha=0.5)
-    plt.xlabel("False Positive Rate (1 - Specificity)", fontsize=13)
-    plt.ylabel("True Positive Rate (Sensitivity)", fontsize=13)
+    plt.xlabel("False Positive Rate", fontsize=13)
+    plt.ylabel("True Positive Rate", fontsize=13)
     plt.title("Figure 1. ROC Curve Comparison", fontsize=15, fontweight="bold")
     plt.legend(loc="lower right", fontsize=11)
     plt.tight_layout()
     plt.savefig(
         output_dir / "Figure_1_Model_Comparison.tif",
-        format="tiff",
-        dpi=300,
-        bbox_inches="tight",
-        facecolor="white",
-        pil_kwargs={"compression": "tiff_lzw"},
+        format="tiff", dpi=300, bbox_inches="tight", facecolor="white", pil_kwargs={"compression": "tiff_lzw"}
     )
-
 
 if __name__ == "__main__":
     main()
